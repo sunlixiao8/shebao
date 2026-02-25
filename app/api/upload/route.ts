@@ -44,45 +44,37 @@ export async function POST(request: NextRequest) {
         if (citiesToInsert.length > 0) {
           console.log('准备上传城市数据:', citiesToInsert)
 
-          // 先检查表是否存在
-          const { error: checkError, count } = await supabaseAdmin
-            .from('cities')
-            .select('*', { count: 'exact', head: true })
-
-          if (checkError) {
-            console.error('检查表失败:', checkError)
-            return NextResponse.json({
-              error: '数据库表检查失败',
-              details: checkError.message,
-              hint: '请确认cities表已创建'
-            }, { status: 500 })
-          }
-
-          console.log('cities表检查通过，记录数:', count)
-
-          // 尝试逐条插入，捕获具体错误
-          for (const city of citiesToInsert) {
-            console.log('插入城市数据:', city)
+          try {
+            // 直接尝试批量 upsert，让数据库返回真实错误
             const { error: upsertError, data } = await supabaseAdmin
               .from('cities')
-              .upsert(city, {
+              .upsert(citiesToInsert, {
                 onConflict: 'city_name,year',
                 ignoreDuplicates: false
               })
 
             if (upsertError) {
-              console.error('插入单条数据失败:', upsertError)
+              console.error('上传城市数据失败:', upsertError)
               return NextResponse.json({
-                error: '城市数据插入失败',
+                error: '城市数据上传失败',
                 details: upsertError.message,
                 code: upsertError.code,
-                city: city
+                hint: upsertError.code === '42P01' ? '请确认cities表已创建' :
+                      upsertError.code === '42501' ? '请检查数据库访问权限' :
+                      ''
               }, { status: 500 })
             }
-            console.log('插入成功:', data)
-          }
 
-          citiesUpdated = citiesToInsert.length
+            console.log('城市数据上传成功:', data)
+            citiesUpdated = citiesToInsert.length
+          } catch (error) {
+            console.error('上传城市数据异常:', error)
+            return NextResponse.json({
+              error: '城市数据上传异常',
+              details: error instanceof Error ? error.message : '未知错误',
+              hint: '请检查环境变量和数据库配置'
+            }, { status: 500 })
+          }
         }
       }
     }
@@ -109,19 +101,36 @@ export async function POST(request: NextRequest) {
         }
 
         if (salariesToInsert.length > 0) {
-          const { error } = await supabaseAdmin
-            .from('salaries')
-            .upsert(salariesToInsert, {
-              onConflict: 'employee_id,month',
-              ignoreDuplicates: false
-            })
+          try {
+            const { error, data } = await supabaseAdmin
+              .from('salaries')
+              .upsert(salariesToInsert, {
+                onConflict: 'employee_id,month',
+                ignoreDuplicates: false
+              })
 
-          if (error) {
-            console.error('上传工资数据失败:', error)
-            return NextResponse.json({ error: '工资数据上传失败' }, { status: 500 })
+            if (error) {
+              console.error('上传工资数据失败:', error)
+              return NextResponse.json({
+                error: '工资数据上传失败',
+                details: error.message,
+                code: error.code,
+                hint: error.code === '42P01' ? '请确认salaries表已创建' :
+                      error.code === '42501' ? '请检查数据库访问权限' :
+                      ''
+              }, { status: 500 })
+            }
+
+            console.log('工资数据上传成功:', data)
+            salariesUpdated = salariesToInsert.length
+          } catch (error) {
+            console.error('上传工资数据异常:', error)
+            return NextResponse.json({
+              error: '工资数据上传异常',
+              details: error instanceof Error ? error.message : '未知错误',
+              hint: '请检查环境变量和数据库配置'
+            }, { status: 500 })
           }
-
-          salariesUpdated = salariesToInsert.length
         }
       }
     }
