@@ -1,0 +1,146 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { supabaseAdmin } from '@/lib/supabase-server'
+import * as XLSX from 'xlsx'
+
+export async function POST(request: NextRequest) {
+  try {
+    const formData = await request.formData()
+    const file = formData.get('file') as File
+
+    if (!file) {
+      return NextResponse.json({ error: '请选择文件' }, { status: 400 })
+    }
+
+    if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+      return NextResponse.json({ error: '请选择Excel文件(.xlsx或.xls)' }, { status: 400 })
+    }
+
+    const buffer = Buffer.from(await file.arrayBuffer())
+    const workbook = XLSX.read(buffer, { type: 'buffer' })
+
+    let citiesUpdated = 0
+    let salariesUpdated = 0
+
+    if (workbook.SheetNames.includes('cities')) {
+      const citiesSheet = workbook.Sheets['cities']
+      const citiesData = XLSX.utils.sheet_to_json(citiesSheet, { header: 1 })
+
+      if (citiesData.length > 1) {
+        const citiesToInsert = []
+
+        for (let i = 1; i < citiesData.length; i++) {
+          const row = citiesData[i] as any[]
+          if (row && row[0]) {
+            citiesToInsert.push({
+              city_name: String(row[0]),
+              year: String(row[1]),
+              base_min: parseInt(String(row[2])),
+              base_max: parseInt(String(row[3])),
+              rate: parseFloat(String(row[4]))
+            })
+          }
+        }
+
+        if (citiesToInsert.length > 0) {
+          console.log('准备上传城市数据:', citiesToInsert)
+
+          // 先检查表是否存在
+          const { error: checkError, count } = await supabaseAdmin
+            .from('cities')
+            .select('*', { count: 'exact', head: true })
+
+          if (checkError) {
+            console.error('检查表失败:', checkError)
+            return NextResponse.json({
+              error: '数据库表检查失败',
+              details: checkError.message,
+              hint: '请确认cities表已创建'
+            }, { status: 500 })
+          }
+
+          console.log('cities表检查通过，记录数:', count)
+
+          // 尝试逐条插入，捕获具体错误
+          for (const city of citiesToInsert) {
+            console.log('插入城市数据:', city)
+            const { error: upsertError, data } = await supabaseAdmin
+              .from('cities')
+              .upsert(city, {
+                onConflict: 'city_name,year',
+                ignoreDuplicates: false
+              })
+
+            if (upsertError) {
+              console.error('插入单条数据失败:', upsertError)
+              return NextResponse.json({
+                error: '城市数据插入失败',
+                details: upsertError.message,
+                code: upsertError.code,
+                city: city
+              }, { status: 500 })
+            }
+            console.log('插入成功:', data)
+          }
+
+          citiesUpdated = citiesToInsert.length
+        }
+      }
+    }
+
+    if (workbook.SheetNames.includes('salaries')) {
+      const salariesSheet = workbook.Sheets['salaries']
+      const salariesData = XLSX.utils.sheet_to_json(salariesSheet, { header: 1 })
+
+      if (salariesData.length > 1) {
+        const salariesToInsert = []
+
+        for (let i = 1; i < salariesData.length; i++) {
+          const row = salariesData[i] as any[]
+          if (row && row[0] && row[2]) {
+            salariesToInsert.push({
+              employee_id: String(row[0]),
+              employee_name: String(row[1]),
+              month: String(row[2]),
+              salary_amount: parseInt(String(row[3])),
+              city_name: String(row[4]),
+              year: String(row[2]).substring(0, 4)
+            })
+          }
+        }
+
+        if (salariesToInsert.length > 0) {
+          const { error } = await supabaseAdmin
+            .from('salaries')
+            .upsert(salariesToInsert, {
+              onConflict: 'employee_id,month',
+              ignoreDuplicates: false
+            })
+
+          if (error) {
+            console.error('上传工资数据失败:', error)
+            return NextResponse.json({ error: '工资数据上传失败' }, { status: 500 })
+          }
+
+          salariesUpdated = salariesToInsert.length
+        }
+      }
+    }
+
+    return NextResponse.json({
+      message: '数据上传成功',
+      stats: {
+        citiesUpdated,
+        salariesUpdated
+      }
+    })
+
+  } catch (error) {
+    console.error('上传处理错误:', error)
+    console.error('错误栈:', error instanceof Error ? error.stack : '无栈信息')
+    return NextResponse.json({
+      error: '服务器错误',
+      details: error instanceof Error ? error.message : '未知错误',
+      type: error instanceof Error ? error.constructor.name : typeof error
+    }, { status: 500 })
+  }
+}
